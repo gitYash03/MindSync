@@ -6,48 +6,55 @@ import { generateEmbeddings, emotionAnalysisAndGeneratePrompt } from '../../util
 import { z } from "zod";
 
 
-
 export const createJournalEntry: RequestHandler = async (req, res, next) => {
     const client = await pool.connect(); 
     try {
-        await client.query("BEGIN"); //Begin postgres transaction
+        await client.query("BEGIN");
 
         const emotionsAndPrompt = await emotionAnalysisAndGeneratePrompt(req.body.entryText);
         const validatedData = journalEntrySchema.parse({
             userId: req.body.userId,
-            entryText:req.body.entryText,
-            emotionLabel:emotionsAndPrompt.emotions
-    });
-        
-        const journalInsertquery = "INSERT INTO journal_entries(user_id,entry_text,emotion_labels) VALUES ($1,$2,$3) RETURNING journal_id";
-        const journalInsertparams = [
+            entryText: req.body.entryText,
+            emotionLabel: emotionsAndPrompt.emotions
+        });
+
+        const journalInsertQuery = `
+            INSERT INTO journal_entries (user_id, entry_text, emotion_labels)
+            VALUES ($1, $2, $3)
+            RETURNING journal_id
+        `;
+        const journalInsertParams = [
             validatedData.userId,
             validatedData.entryText,
             validatedData.emotionLabel
         ];
 
-        const journalInsertresult = await client.query(journalInsertquery, journalInsertparams);
-        const journalId = journalInsertresult.rows[0].journal_id;
-        //rows: [ { journal_id: 7 } ],
-        await console.log(journalInsertresult);
-        const vectorEmbeddings = await generateEmbeddings(validatedData.entryText);
-        const formattedVector = `'[${vectorEmbeddings.join(' ')}]'`;
-        console.log(formattedVector);
+        const journalInsertResult = await client.query(journalInsertQuery, journalInsertParams);
+        const journalId = journalInsertResult.rows[0].journal_id;
 
+        // Generate embeddings and format as vector string
+        const vectorEmbeddings = await generateEmbeddings(validatedData.entryText);
+        const vectorString = `[${vectorEmbeddings.join(',')}]`; // Correct format
+
+        // Validate embeddings data (optional, adjust schema as needed)
         const validatedEmbedding = journalEmbeddingSchema.parse({
             journalId,
-            journalEmbedding: formattedVector
+            journalEmbedding: vectorEmbeddings // Ensure this is an array of numbers
         });
 
-        const embeddingInsertquery = `INSERT INTO journal_embeddings (journal_id, embedding) VALUES ($1, $2)`;
-        const embeddingInsertparams = [validatedEmbedding.journalId,validatedEmbedding.journalEmbedding];
-        const embeddingInsertResult = client.query(embeddingInsertquery,embeddingInsertparams);
-        client.query('COMMIT');
+        // Insert embeddings with vector cast
+        const embeddingInsertQuery = `
+            INSERT INTO journal_embeddings (journal_id, embedding)
+            VALUES ($1, $2::vector)
+        `;
+        const embeddingInsertParams = [journalId, vectorString];
+        await client.query(embeddingInsertQuery, embeddingInsertParams);
 
-        res.status(200).json({ message: "Success", rows: [journalInsertresult.rows,embeddingInsertResult.rows] });
+        await client.query('COMMIT');
+        res.status(200).json({ message: "Success", journalId });
     } catch (error: any) {
-        client.query('ROLLBACK'); //Rollback in case of error
-        res.status(500).json({ error: error.errors || error.message});
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: error.errors || error.message });
     } finally {
         client.release();
     }
