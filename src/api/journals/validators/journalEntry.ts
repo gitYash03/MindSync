@@ -10,9 +10,9 @@ const validEmotions = [
   ] as const;
 
 export const journalEntrySchema = z.object({
-    userId:z.string().uuid(), //valid string uuid
+    userId:z.string().uuid(), //valid string uuid - for now temp number change to z.string().uuid() later
     entryText:z.string().min(30,"Entry must have at least 30 characters."), //valid string entry
     emotionLabel:z.array(z.enum(validEmotions)),//emotion is a valid array with validEmotions as allowed tuples of string
-    createdAt:z.string().datetime(), //valid datetime
+    createdAt:z.string().datetime().default(new Date().toISOString()), //valid datetime
   });
 
