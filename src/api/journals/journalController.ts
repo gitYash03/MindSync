@@ -10,7 +10,6 @@ export const createJournalEntry: RequestHandler = async (req, res, next) => {
     const client = await pool.connect(); 
     try {
         await client.query("BEGIN");
-
         const emotionsAndPrompt = await emotionAnalysisAndGeneratePrompt(req.body.entryText);
         const validatedData = journalEntrySchema.parse({
             userId: req.body.userId,
@@ -61,41 +60,65 @@ export const createJournalEntry: RequestHandler = async (req, res, next) => {
 };
 
 export const getJournalEntries: RequestHandler = async (req, res, next) => {
-    try {
-        const { query } = req.body;
-        if (!query) {
-          return res.status(400).json({ error: "Query is required" });
-        }
+  try {
+    const { query } = req.body;
+    if (!query) {
+      res.status(400).json({ error: "Query is required" });
+      return;
+    }
+
+    const queryEmbedding = await generateEmbeddings(query);
+    const embeddingString = `[${queryEmbedding.join(",")}]`;
+
+    console.log(embeddingString);
+
+    const result = await pool.query(
+      `
+      WITH keyword_search AS (
+        SELECT 
+          journal_id, 
+          entry_text, 
+          0 AS similarity
+        FROM journal_entries
+        WHERE entry_text ILIKE '%' || $1 || '%'
+        LIMIT 5
+      ),
+      semantic_search AS (
+        SELECT 
+          journal_entries.journal_id, 
+          journal_entries.entry_text, 
+          journal_embeddings.embedding <=> $2::vector AS similarity
+        FROM journal_entries
+        JOIN journal_embeddings ON journal_entries.journal_id = journal_embeddings.journal_id
+        ORDER BY similarity ASC
+        LIMIT 5
+      ),
+      combined AS (
+        SELECT * FROM keyword_search
+        UNION ALL
+        SELECT * FROM semantic_search
+      )
+      SELECT 
+        journal_id, 
+        entry_text, 
+        MIN(similarity) AS similarity
+      FROM combined
+      GROUP BY journal_id, entry_text
+      ORDER BY similarity ASC
+      LIMIT 5;
+      `,
+      [query, embeddingString]
+    );
     
-        // Generate embedding for the query
-        const queryEmbedding = await generateEmbeddings(query);
     
-        // Perform hybrid search: SQL LIKE + Semantic Search
-        const result = await pool.query(
-          `(
-            SELECT id, entryText, 0 AS similarity
-            FROM journals
-            WHERE entryText ILIKE '%' || $1 || '%'
-            LIMIT 5
-          )
-          UNION ALL
-          (
-            SELECT id, entryText, journalEmbedding <=> $2 AS similarity
-            FROM journals
-            ORDER BY similarity ASC
-            LIMIT 5
-          )
-          ORDER BY similarity ASC NULLS FIRST
-          LIMIT 5;`,
-          [query, queryEmbedding]
-        );
-    
-        res.json(result.rows);
-      } catch (error) {
-        console.error("Error in hybrid search:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error in hybrid search:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
+
 
 
 // export const createJournalEmbeddings: RequestHandler = async (req,res,next) => {
