@@ -62,19 +62,39 @@ export const createJournalEntry: RequestHandler = async (req, res, next) => {
 
 export const getJournalEntries: RequestHandler = async (req, res, next) => {
     try {
-
-        const { userId } = req.params;
-        const validatedUserId = z.union([z.string().uuid(), z.string()]).parse(userId);
-
-
-        const query = `SELECT * FROM journal_entries WHERE user_id = $1 ORDER BY created_at DESC`;
-        const result = await pool.query(query, [validatedUserId]);
-
-
-        res.status(200).json({ message: "Success", rows: result.rows });
-    } catch (error: any) {
-        res.status(500).json({ error: error.errors || error.message });
-    }
+        const { query } = req.body;
+        if (!query) {
+          return res.status(400).json({ error: "Query is required" });
+        }
+    
+        // Generate embedding for the query
+        const queryEmbedding = await generateEmbeddings(query);
+    
+        // Perform hybrid search: SQL LIKE + Semantic Search
+        const result = await pool.query(
+          `(
+            SELECT id, entryText, 0 AS similarity
+            FROM journals
+            WHERE entryText ILIKE '%' || $1 || '%'
+            LIMIT 5
+          )
+          UNION ALL
+          (
+            SELECT id, entryText, journalEmbedding <=> $2 AS similarity
+            FROM journals
+            ORDER BY similarity ASC
+            LIMIT 5
+          )
+          ORDER BY similarity ASC NULLS FIRST
+          LIMIT 5;`,
+          [query, queryEmbedding]
+        );
+    
+        res.json(result.rows);
+      } catch (error) {
+        console.error("Error in hybrid search:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
 };
 
 
